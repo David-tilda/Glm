@@ -154,6 +154,33 @@
       color: var(--muted);
       margin-bottom: 0.35rem;
     }
+    .msg-reasoning {
+      margin: 0 0 0.65rem;
+      padding: 0.5rem 0.65rem;
+      background: rgba(0, 0, 0, 0.22);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .msg-reasoning summary {
+      cursor: pointer;
+      color: var(--text);
+      font-weight: 500;
+    }
+    .msg-reasoning-body {
+      margin: 0.5rem 0 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 12rem;
+      overflow-y: auto;
+      font-family: ui-monospace, monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+    }
+    .msg-answer {
+      color: var(--text);
+    }
     footer.composer {
       padding: 0.75rem 1rem 1rem;
       border-top: 1px solid var(--border);
@@ -262,7 +289,9 @@
     const SYSTEM_PROMPT = {
       role: "system",
       content:
-        "Ты полезный ассистент. Отвечай ясно и по делу. Если пользователь пишет на русском — отвечай на русском.",
+        "Ты полезный ассистент. Если пользователь пишет на русском — отвечай на русском. " +
+        "Отвечай только финальным ответом для пользователя: короткие абзацы или списки по делу. " +
+        "Не пиши в ответе ход рассуждений, пункты вроде «1. Analyze», «Chain of Thought», черновики и анализ намерения — сразу готовый текст.",
     };
 
     /** @type {{ role: string, content: string }[]} */
@@ -286,27 +315,138 @@
       return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
     }
 
-    function streamChunkToText(part) {
-      if (part == null) return "";
-      if (typeof part === "string") return part;
-      if (typeof part.text === "string") return part.text;
-      if (typeof part.reasoning === "string") return part.reasoning;
-      if (part.type === "text" && typeof part.text === "string") return part.text;
+    /**
+     * Разделяет потоковые чанки: reasoning не показываем в основном ответе.
+     * @returns {{ text: string, reasoning: string }}
+     */
+    function streamChunkParts(part) {
+      const out = { text: "", reasoning: "" };
+      if (part == null) return out;
+      if (typeof part === "string") {
+        out.text = part;
+        return out;
+      }
+      if (typeof part.reasoning === "string" && part.reasoning) {
+        out.reasoning = part.reasoning;
+      }
+      if (typeof part.text === "string" && part.text) {
+        out.text = part.text;
+      }
       const d0 =
         part.delta ||
         (Array.isArray(part.choices) && part.choices[0] && part.choices[0].delta) ||
         null;
-      if (d0 && typeof d0.content === "string") return d0.content;
+      if (!out.text && d0 && typeof d0.content === "string") {
+        out.text = d0.content;
+      }
       const c0 =
         Array.isArray(part.choices) &&
         part.choices[0] &&
         part.choices[0].message &&
         part.choices[0].message.content;
-      if (typeof c0 === "string") return c0;
-      if (part.message && typeof part.message.content === "string") {
-        return part.message.content;
+      if (!out.text && typeof c0 === "string") {
+        out.text = c0;
       }
-      return "";
+      if (!out.text && part.message && typeof part.message.content === "string") {
+        out.text = part.message.content;
+      }
+      return out;
+    }
+
+    /**
+     * Если модель смешала CoT и ответ в одном тексте — отрезаем последний блок как ответ пользователю.
+     */
+    function splitCoTFromAnswer(raw) {
+      const s = String(raw || "").trim();
+      if (s.length < 400) return { reasoning: "", answer: s };
+
+      const looksLikeCoT =
+        /(?:^|\n)\s*\d+\.\s*(?:Analyze|Determine|Formulate|Draft|Select|Identify|Check)/i.test(
+          s
+        ) ||
+        /Chain of Thought|ход рассужден|пошагов/i.test(s);
+
+      if (!looksLikeCoT) return { reasoning: "", answer: s };
+
+      const blocks = s.split(/\n{2,}/);
+      if (blocks.length >= 2) {
+        const last = blocks[blocks.length - 1].trim();
+        const lastShort = last.length > 0 && last.length <= 900;
+        const lastClean =
+          lastShort &&
+          !/Analyze|Determine|Formulate|Draft responses|Select Best|пункт\s*\d/i.test(last);
+        if (lastClean) {
+          return {
+            reasoning: blocks.slice(0, -1).join("\n\n").trim(),
+            answer: last,
+          };
+        }
+      }
+
+      const lines = s.split("\n");
+      const tail = [];
+      for (let i = lines.length - 1; i >= 0 && tail.length < 8; i--) {
+        tail.unshift(lines[i]);
+        const joined = tail.join("\n").trim();
+        if (
+          joined.length > 30 &&
+          joined.length <= 1200 &&
+          !/Analyze|Determine|Formulate|Draft|Select Best/i.test(joined)
+        ) {
+          const head = lines.slice(0, i).join("\n").trim();
+          if (head.length > 200) {
+            return { reasoning: head, answer: joined };
+          }
+        }
+      }
+
+      return { reasoning: "", answer: s };
+    }
+
+    function ensureAssistantLayout(wrap) {
+      let details = wrap.querySelector(".msg-reasoning");
+      let reasoningBody = wrap.querySelector(".msg-reasoning-body");
+      let answerEl = wrap.querySelector(".msg-answer");
+      if (!details) {
+        details = document.createElement("details");
+        details.className = "msg-reasoning";
+        details.style.display = "none";
+        const sum = document.createElement("summary");
+        sum.textContent = "Ход рассуждения модели (скрыто)";
+        reasoningBody = document.createElement("div");
+        reasoningBody.className = "msg-reasoning-body";
+        details.appendChild(sum);
+        details.appendChild(reasoningBody);
+        const roleEl = wrap.querySelector(".role");
+        if (roleEl && roleEl.nextSibling) {
+          wrap.insertBefore(details, roleEl.nextSibling);
+        } else {
+          wrap.appendChild(details);
+        }
+      }
+      if (!answerEl) {
+        answerEl = document.createElement("div");
+        answerEl.className = "msg-answer";
+        wrap.appendChild(answerEl);
+        const oldBody = wrap.querySelector(".msg-body");
+        if (oldBody && oldBody.parentNode === wrap) {
+          oldBody.remove();
+        }
+      }
+      return { details, reasoningBody, answerEl };
+    }
+
+    function setAssistantContent(wrap, reasoningText, answerText) {
+      const { details, reasoningBody, answerEl } = ensureAssistantLayout(wrap);
+      const r = String(reasoningText || "").trim();
+      if (r) {
+        details.style.display = "";
+        reasoningBody.textContent = r;
+      } else {
+        details.style.display = "none";
+        reasoningBody.textContent = "";
+      }
+      answerEl.textContent = String(answerText || "").trim();
     }
 
     async function updateAuthUI() {
@@ -445,11 +585,7 @@
 
       conversation.push({ role: "user", content: text });
 
-      const { body: assistantBody, wrap: assistantWrap } = appendBubble(
-        "assistant",
-        "",
-        "streaming"
-      );
+      const { wrap: assistantWrap } = appendBubble("assistant", "", "streaming");
 
       const model = elModel.value;
       let fullAssistant = "";
@@ -461,14 +597,28 @@
             model,
             stream: true,
           });
+          let streamReasoning = "";
+          let streamText = "";
           for await (const part of stream) {
-            const chunk = streamChunkToText(part);
-            if (chunk) {
-              fullAssistant += chunk;
-              assistantBody.textContent = fullAssistant;
-              elMessages.scrollTop = elMessages.scrollHeight;
-            }
+            const p = streamChunkParts(part);
+            if (p.reasoning) streamReasoning += p.reasoning;
+            if (p.text) streamText += p.text;
+            const split = splitCoTFromAnswer(streamText);
+            const mergedReason = [streamReasoning, split.reasoning]
+              .filter(Boolean)
+              .join("\n\n")
+              .trim();
+            const shownAnswer = (split.answer || streamText).trim();
+            setAssistantContent(assistantWrap, mergedReason, shownAnswer);
+            elMessages.scrollTop = elMessages.scrollHeight;
           }
+          const splitFinal = splitCoTFromAnswer(streamText);
+          fullAssistant = (splitFinal.answer || streamText).trim();
+          const mergedReasonFinal = [streamReasoning, splitFinal.reasoning]
+            .filter(Boolean)
+            .join("\n\n")
+            .trim();
+          setAssistantContent(assistantWrap, mergedReasonFinal, fullAssistant);
           return fullAssistant;
         })();
 
@@ -487,15 +637,17 @@
         }
 
         if (!String(fullAssistant).trim()) {
+          const emptyHint =
+            "Пустой ответ. Нажмите «Войти через Puter» (вход в аккаунт Puter обязателен на стороннем сайте) или выберите модель GLM 4.7 Flash.";
           const nonStream = await withTimeout(
             puter.ai.chat(conversation, { model, stream: false }),
             STREAM_WAIT_MS,
             "Запрос к GLM превысил время ожидания."
           );
-          fullAssistant = extractTextFromResponse(nonStream);
-          assistantBody.textContent =
-            fullAssistant.trim() ||
-            "Пустой ответ. Нажмите «Войти через Puter» (вход в аккаунт Puter обязателен на стороннем сайте) или выберите модель GLM 4.7 Flash.";
+          const raw = extractTextFromResponse(nonStream).trim();
+          const splitNs = splitCoTFromAnswer(raw);
+          fullAssistant = (splitNs.answer || raw).trim() || emptyHint;
+          setAssistantContent(assistantWrap, splitNs.reasoning.trim(), fullAssistant);
         }
 
         conversation.push({ role: "assistant", content: fullAssistant });
