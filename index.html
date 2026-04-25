@@ -61,7 +61,9 @@
       font-size: 0.875rem;
       min-width: 200px;
     }
-    button#newChat {
+    button#newChat,
+    button#signIn,
+    button#signOut {
       background: transparent;
       color: var(--muted);
       border: 1px solid var(--border);
@@ -70,9 +72,42 @@
       font-size: 0.875rem;
       cursor: pointer;
     }
-    button#newChat:hover {
+    button#newChat:hover,
+    button#signIn:hover,
+    button#signOut:hover {
       color: var(--text);
       border-color: var(--muted);
+    }
+    button#signIn {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    button#signIn:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #fff;
+    }
+    #authStatus {
+      font-size: 0.8rem;
+      color: var(--muted);
+      max-width: 100%;
+    }
+    #authBanner {
+      margin: 0 1rem 0;
+      padding: 0.65rem 1rem;
+      background: rgba(61, 139, 253, 0.12);
+      border: 1px solid rgba(61, 139, 253, 0.35);
+      border-radius: 10px;
+      font-size: 0.875rem;
+      color: var(--text);
+      max-width: 800px;
+      width: calc(100% - 2rem);
+      align-self: center;
+    }
+    #authBanner strong {
+      display: block;
+      margin-bottom: 0.35rem;
     }
     #messages {
       flex: 1;
@@ -186,8 +221,12 @@
       Модель
       <select id="model" aria-label="Модель GLM"></select>
     </label>
+    <span id="authStatus" aria-live="polite"></span>
+    <button type="button" id="signIn" title="Откроется окно Puter">Войти через Puter</button>
+    <button type="button" id="signOut" style="display: none">Выйти</button>
     <button type="button" id="newChat" title="Очистить историю">Новый чат</button>
   </header>
+  <div id="authBanner" style="display: none"></div>
   <div id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
   <footer class="composer">
     <div class="composer-inner">
@@ -202,9 +241,10 @@
     <p class="hint">
       Работает через
       <a href="https://developer.puter.com/tutorials/free-unlimited-zai-glm-api/" target="_blank" rel="noopener">Puter.js</a>
-      (модель Z.AI GLM, без API-ключа на стороне разработчика). Использование оплачивается по модели
+      (модель Z.AI GLM, без API-ключа на стороне разработчика). На стороннем сайте (GitHub Pages) обычно нужно один раз нажать
+      <strong>Войти через Puter</strong> — иначе всплывающее окно входа может быть заблокировано браузером. Использование оплачивается по модели
       <a href="https://docs.puter.com/user-pays-model/" target="_blank" rel="noopener">User-Pays</a>
-      со стороны пользователя Puter.
+      со стороны вашего аккаунта Puter.
     </p>
   </footer>
   <script>
@@ -233,6 +273,93 @@
     const elSend = document.getElementById("send");
     const elModel = document.getElementById("model");
     const elNewChat = document.getElementById("newChat");
+    const elSignIn = document.getElementById("signIn");
+    const elSignOut = document.getElementById("signOut");
+    const elAuthStatus = document.getElementById("authStatus");
+    const elAuthBanner = document.getElementById("authBanner");
+
+    function withTimeout(promise, ms, message) {
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+    }
+
+    function streamChunkToText(part) {
+      if (part == null) return "";
+      if (typeof part === "string") return part;
+      if (typeof part.text === "string") return part.text;
+      if (typeof part.reasoning === "string") return part.reasoning;
+      if (part.type === "text" && typeof part.text === "string") return part.text;
+      const d0 =
+        part.delta ||
+        (Array.isArray(part.choices) && part.choices[0] && part.choices[0].delta) ||
+        null;
+      if (d0 && typeof d0.content === "string") return d0.content;
+      const c0 =
+        Array.isArray(part.choices) &&
+        part.choices[0] &&
+        part.choices[0].message &&
+        part.choices[0].message.content;
+      if (typeof c0 === "string") return c0;
+      if (part.message && typeof part.message.content === "string") {
+        return part.message.content;
+      }
+      return "";
+    }
+
+    async function updateAuthUI() {
+      try {
+        const signed = typeof puter !== "undefined" && puter.auth && puter.auth.isSignedIn();
+        if (signed) {
+          elAuthBanner.style.display = "none";
+          elSignIn.style.display = "none";
+          elSignOut.style.display = "";
+          let label = "Puter: вошли";
+          try {
+            const user = await puter.auth.getUser();
+            if (user && user.username) label = "Puter: " + user.username;
+          } catch (e) {
+            /* ignore */
+          }
+          elAuthStatus.textContent = label;
+        } else {
+          elSignIn.style.display = "";
+          elSignOut.style.display = "none";
+          elAuthStatus.textContent = "";
+          elAuthBanner.style.display = "block";
+          elAuthBanner.innerHTML =
+            "<strong>Вход в Puter</strong>Чтобы ответы GLM доходили с GitHub Pages, нажмите «Войти через Puter» (можно с временным аккаунтом). Без этого браузер часто блокирует фоновую авторизацию.";
+        }
+      } catch (e) {
+        elAuthStatus.textContent = "";
+      }
+    }
+
+    elSignIn.addEventListener("click", async () => {
+      elSignIn.disabled = true;
+      try {
+        await puter.auth.signIn({ attempt_temp_user_creation: true });
+        await updateAuthUI();
+      } catch (e) {
+        const m = e && e.message ? e.message : String(e);
+        appendBubble("assistant", "Не удалось войти в Puter: " + m, "error");
+      } finally {
+        elSignIn.disabled = false;
+      }
+    });
+
+    elSignOut.addEventListener("click", () => {
+      try {
+        puter.auth.signOut();
+      } catch (e) {
+        /* ignore */
+      }
+      updateAuthUI();
+    });
+
+    updateAuthUI();
 
     GLM_MODELS.forEach((m) => {
       const opt = document.createElement("option");
@@ -261,8 +388,19 @@
     function extractTextFromResponse(response) {
       if (response == null) return "";
       if (typeof response === "string") return response;
-      const msg = response.message;
-      if (!msg) return String(response);
+      try {
+        if (typeof response.toString === "function") {
+          const s = response.toString();
+          if (s && s !== "[object Object]") return s;
+        }
+      } catch (e) {
+        /* ignore */
+      }
+      const msg = response.message || response.result?.message;
+      if (!msg) {
+        if (typeof response.content === "string") return response.content;
+        return "";
+      }
       const c = msg.content;
       if (typeof c === "string") return c;
       if (Array.isArray(c)) {
@@ -270,6 +408,9 @@
           .map((block) => {
             if (typeof block === "string") return block;
             if (block && typeof block.text === "string") return block.text;
+            if (block && block.type === "text" && typeof block.text === "string") {
+              return block.text;
+            }
             return "";
           })
           .join("");
@@ -282,7 +423,7 @@
       elMessages.innerHTML = "";
       appendBubble(
         "assistant",
-        "Привет! Я отвечаю через модель GLM в Puter. Напишите сообщение ниже.",
+        "Привет! Я отвечаю через модель GLM в Puter. Если сайт открыт не на puter.site, сначала нажмите «Войти через Puter», затем пишите сообщение.",
         ""
       );
     }
@@ -314,28 +455,47 @@
       let fullAssistant = "";
 
       try {
-        const stream = await puter.ai.chat(conversation, {
-          model,
-          stream: true,
-        });
-
-        for await (const part of stream) {
-          let chunk = "";
-          if (part && part.reasoning) chunk += part.reasoning;
-          else if (part && typeof part.text === "string") chunk += part.text;
-          else if (part && part.type === "text" && part.text) chunk += part.text;
-
-          if (chunk) {
-            fullAssistant += chunk;
-            assistantBody.textContent = fullAssistant;
-            elMessages.scrollTop = elMessages.scrollHeight;
+        const STREAM_WAIT_MS = 90000;
+        const streamPromise = (async () => {
+          const stream = await puter.ai.chat(conversation, {
+            model,
+            stream: true,
+          });
+          for await (const part of stream) {
+            const chunk = streamChunkToText(part);
+            if (chunk) {
+              fullAssistant += chunk;
+              assistantBody.textContent = fullAssistant;
+              elMessages.scrollTop = elMessages.scrollHeight;
+            }
           }
+          return fullAssistant;
+        })();
+
+        try {
+          await withTimeout(
+            streamPromise,
+            STREAM_WAIT_MS,
+            "__STREAM_TIMEOUT__"
+          );
+        } catch (streamErr) {
+          const timedOut =
+            streamErr &&
+            streamErr.message === "__STREAM_TIMEOUT__";
+          if (!timedOut) throw streamErr;
+          // Стрим мог «зависнуть» без ошибки (известная проблема SDK при лимитах) — пробуем без stream.
         }
 
-        if (!fullAssistant.trim()) {
-          const nonStream = await puter.ai.chat(conversation, { model });
+        if (!String(fullAssistant).trim()) {
+          const nonStream = await withTimeout(
+            puter.ai.chat(conversation, { model, stream: false }),
+            STREAM_WAIT_MS,
+            "Запрос к GLM превысил время ожидания."
+          );
           fullAssistant = extractTextFromResponse(nonStream);
-          assistantBody.textContent = fullAssistant || "(пустой ответ)";
+          assistantBody.textContent =
+            fullAssistant.trim() ||
+            "Пустой ответ. Нажмите «Войти через Puter» (вход в аккаунт Puter обязателен на стороннем сайте) или выберите модель GLM 4.7 Flash.";
         }
 
         conversation.push({ role: "assistant", content: fullAssistant });
