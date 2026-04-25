@@ -3,8 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
   <title>Чат с GLM — Puter.js</title>
-  <script src="https://js.puter.com/v2/"></script>
+  <script src="https://js.puter.com/v2/?v=glmchat-20260425"></script>
   <style>
     :root {
       --bg: #0f1419;
@@ -154,6 +156,12 @@
       color: var(--muted);
       margin-bottom: 0.35rem;
     }
+    .app-rev {
+      font-size: 0.65rem;
+      font-weight: 400;
+      color: var(--muted);
+      vertical-align: middle;
+    }
     .msg-reasoning {
       margin: 0 0 0.65rem;
       padding: 0.5rem 0.65rem;
@@ -243,7 +251,7 @@
 </head>
 <body>
   <header>
-    <h1>Чат с Z.AI GLM</h1>
+    <h1>Чат с Z.AI GLM <span id="appRev" class="app-rev" title="Версия страницы; если не совпадает с последним деплоем — обновите с очисткой кэша"></span></h1>
     <label>
       Модель
       <select id="model" aria-label="Модель GLM"></select>
@@ -275,6 +283,7 @@
     </p>
   </footer>
   <script>
+    const APP_PAGE_REV = "2026-04-25";
     const GLM_MODELS = [
       { id: "z-ai/glm-5.1", label: "GLM 5.1" },
       { id: "z-ai/glm-5-turbo", label: "GLM 5 Turbo" },
@@ -306,6 +315,8 @@
     const elSignOut = document.getElementById("signOut");
     const elAuthStatus = document.getElementById("authStatus");
     const elAuthBanner = document.getElementById("authBanner");
+    const elAppRev = document.getElementById("appRev");
+    if (elAppRev) elAppRev.textContent = "(v" + APP_PAGE_REV + ")";
 
     function withTimeout(promise, ms, message) {
       let timer;
@@ -353,29 +364,49 @@
       return out;
     }
 
+    function looksLikeInternalReasoning(s) {
+      if (/Chain of Thought|ход рассужден|CoT\b/i.test(s)) return true;
+      if (
+        /(?:^|[\n\r])\s*\d+\.\s*(?:\*\*)?\s*(?:Analyze|Determine|Formulate|Draft|Select|Identify|Check|Apply|Evaluate)\b/im.test(
+          s
+        )
+      ) {
+        return true;
+      }
+      if (/(?:^|[\n\r])\s*\d+\.\s*\*\*[^*\n]{3,80}\*\*/m.test(s)) return true;
+      if (/Draft responses|Select Best Response|Formulate Response|Apply Rules/i.test(s)) {
+        return true;
+      }
+      return false;
+    }
+
+    function lineLooksLikeCoTStep(line) {
+      const t = String(line || "").trim();
+      if (!t) return false;
+      if (/^\d+\.\s*(\*\*)?\s*(?:Analyze|Determine|Formulate|Draft|Select|Identify|Check|Apply|Evaluate)\b/i.test(t)) {
+        return true;
+      }
+      if (/^\d+\.\s*\*\*[^*]+\*\*/.test(t)) return true;
+      return false;
+    }
+
     /**
-     * Если модель смешала CoT и ответ в одном тексте — отрезаем последний блок как ответ пользователю.
+     * Если модель смешала CoT и ответ в одном тексте — отрезаем последний блок / последнюю строку как ответ.
      */
     function splitCoTFromAnswer(raw) {
       const s = String(raw || "").trim();
-      if (s.length < 400) return { reasoning: "", answer: s };
+      if (!s) return { reasoning: "", answer: "" };
+      if (!looksLikeInternalReasoning(s)) return { reasoning: "", answer: s };
 
-      const looksLikeCoT =
-        /(?:^|\n)\s*\d+\.\s*(?:Analyze|Determine|Formulate|Draft|Select|Identify|Check)/i.test(
-          s
-        ) ||
-        /Chain of Thought|ход рассужден|пошагов/i.test(s);
-
-      if (!looksLikeCoT) return { reasoning: "", answer: s };
-
-      const blocks = s.split(/\n{2,}/);
+      const blocks = s.split(/\n{2,}/).map((b) => b.trim()).filter(Boolean);
       if (blocks.length >= 2) {
-        const last = blocks[blocks.length - 1].trim();
-        const lastShort = last.length > 0 && last.length <= 900;
-        const lastClean =
-          lastShort &&
-          !/Analyze|Determine|Formulate|Draft responses|Select Best|пункт\s*\d/i.test(last);
-        if (lastClean) {
+        const last = blocks[blocks.length - 1];
+        const lastOk =
+          last.length > 0 &&
+          last.length <= 1400 &&
+          !looksLikeInternalReasoning(last) &&
+          !lineLooksLikeCoTStep(last.split("\n")[0] || "");
+        if (lastOk) {
           return {
             reasoning: blocks.slice(0, -1).join("\n\n").trim(),
             answer: last,
@@ -383,18 +414,32 @@
         }
       }
 
-      const lines = s.split("\n");
+      const lines = s.split(/\n/);
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const L = lines[i].trim();
+        if (L.length < 12 || L.length > 1400) continue;
+        if (lineLooksLikeCoTStep(L)) continue;
+        if (/Analyze|Determine|Formulate|Draft responses|Select Best|Apply Rules/i.test(L)) {
+          continue;
+        }
+        if (/^\d+\.\s/.test(L)) continue;
+        const head = lines.slice(0, i).join("\n").trim();
+        if (head.length > 80 && looksLikeInternalReasoning(head)) {
+          return { reasoning: head, answer: L };
+        }
+      }
+
       const tail = [];
-      for (let i = lines.length - 1; i >= 0 && tail.length < 8; i--) {
+      for (let i = lines.length - 1; i >= 0 && tail.length < 12; i--) {
         tail.unshift(lines[i]);
         const joined = tail.join("\n").trim();
         if (
-          joined.length > 30 &&
-          joined.length <= 1200 &&
-          !/Analyze|Determine|Formulate|Draft|Select Best/i.test(joined)
+          joined.length > 24 &&
+          joined.length <= 1400 &&
+          !/Analyze|Determine|Formulate|Draft responses|Select Best/i.test(joined)
         ) {
           const head = lines.slice(0, i).join("\n").trim();
-          if (head.length > 200) {
+          if (head.length > 120 && looksLikeInternalReasoning(head)) {
             return { reasoning: head, answer: joined };
           }
         }
