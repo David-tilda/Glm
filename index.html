@@ -189,6 +189,14 @@
     .msg-answer {
       color: var(--text);
     }
+    .msg-footnote {
+      margin-top: 0.55rem;
+      padding-top: 0.55rem;
+      border-top: 1px dashed var(--border);
+      font-size: 0.8rem;
+      color: var(--error);
+      line-height: 1.4;
+    }
     footer.composer {
       padding: 0.75rem 1rem 1rem;
       border-top: 1px solid var(--border);
@@ -283,7 +291,7 @@
     </p>
   </footer>
   <script>
-    const APP_PAGE_REV = "2026-04-25";
+    const APP_PAGE_REV = "2026-04-25b";
     const GLM_MODELS = [
       { id: "z-ai/glm-5.1", label: "GLM 5.1" },
       { id: "z-ai/glm-5-turbo", label: "GLM 5 Turbo" },
@@ -494,6 +502,28 @@
       answerEl.textContent = String(answerText || "").trim();
     }
 
+    function setAssistantFootnote(wrap, note) {
+      let foot = wrap.querySelector(".msg-footnote");
+      if (!note || !String(note).trim()) {
+        if (foot) foot.remove();
+        return;
+      }
+      if (!foot) {
+        foot = document.createElement("div");
+        foot.className = "msg-footnote";
+        wrap.appendChild(foot);
+      }
+      foot.textContent = String(note).trim();
+    }
+
+    function readAssistantAnswerFromDom(wrap) {
+      const answerEl = wrap && wrap.querySelector(".msg-answer");
+      if (answerEl && answerEl.textContent.trim()) return answerEl.textContent.trim();
+      const body = wrap && wrap.querySelector(".msg-body");
+      if (body && body.textContent.trim()) return body.textContent.trim();
+      return "";
+    }
+
     async function updateAuthUI() {
       try {
         const signed = typeof puter !== "undefined" && puter.auth && puter.auth.isSignedIn();
@@ -634,9 +664,13 @@
 
       const model = elModel.value;
       let fullAssistant = "";
+      let streamStoppedEarly = false;
 
       try {
-        const STREAM_WAIT_MS = 90000;
+        const STREAM_WAIT_MS = 240000;
+        const NONSTREAM_WAIT_MS = 300000;
+        const streamState = { streamText: "", streamReasoning: "" };
+
         const streamPromise = (async () => {
           const stream = await puter.ai.chat(conversation, {
             model,
@@ -648,6 +682,8 @@
             const p = streamChunkParts(part);
             if (p.reasoning) streamReasoning += p.reasoning;
             if (p.text) streamText += p.text;
+            streamState.streamText = streamText;
+            streamState.streamReasoning = streamReasoning;
             const split = splitCoTFromAnswer(streamText);
             const mergedReason = [streamReasoning, split.reasoning]
               .filter(Boolean)
@@ -663,6 +699,8 @@
             .filter(Boolean)
             .join("\n\n")
             .trim();
+          streamState.streamText = streamText;
+          streamState.streamReasoning = streamReasoning;
           setAssistantContent(assistantWrap, mergedReasonFinal, fullAssistant);
           return fullAssistant;
         })();
@@ -678,7 +716,20 @@
             streamErr &&
             streamErr.message === "__STREAM_TIMEOUT__";
           if (!timedOut) throw streamErr;
-          // Стрим мог «зависнуть» без ошибки (известная проблема SDK при лимитах) — пробуем без stream.
+          const st = streamState.streamText || "";
+          const sr = streamState.streamReasoning || "";
+          const split = splitCoTFromAnswer(st);
+          const mergedReason = [sr, split.reasoning].filter(Boolean).join("\n\n").trim();
+          const partial = (split.answer || st).trim();
+          if (partial) {
+            streamStoppedEarly = true;
+            fullAssistant = partial;
+            setAssistantContent(assistantWrap, mergedReason, fullAssistant);
+            setAssistantFootnote(
+              assistantWrap,
+              "Сервер долго не присылал продолжение — показано только уже полученное. Напишите «продолжи с того места» или выберите GLM 5 Turbo / 4.7 Flash для длинного кода."
+            );
+          }
         }
 
         if (!String(fullAssistant).trim()) {
@@ -686,7 +737,7 @@
             "Пустой ответ. Нажмите «Войти через Puter» (вход в аккаунт Puter обязателен на стороннем сайте) или выберите модель GLM 4.7 Flash.";
           const nonStream = await withTimeout(
             puter.ai.chat(conversation, { model, stream: false }),
-            STREAM_WAIT_MS,
+            NONSTREAM_WAIT_MS,
             "Запрос к GLM превысил время ожидания."
           );
           const raw = extractTextFromResponse(nonStream).trim();
@@ -695,18 +746,30 @@
           setAssistantContent(assistantWrap, splitNs.reasoning.trim(), fullAssistant);
         }
 
+        if (!streamStoppedEarly) {
+          setAssistantFootnote(assistantWrap, "");
+        }
         conversation.push({ role: "assistant", content: fullAssistant });
       } catch (err) {
-        conversation.pop();
-        if (assistantWrap.parentNode === elMessages) {
-          elMessages.removeChild(assistantWrap);
+        const partialFromDom = readAssistantAnswerFromDom(assistantWrap);
+        if (partialFromDom) {
+          conversation.push({ role: "assistant", content: partialFromDom });
+          setAssistantFootnote(
+            assistantWrap,
+            "Ошибка: " + (err && err.message ? err.message : String(err)) + " — текст ответа выше сохранён; можно попросить продолжить."
+          );
+        } else {
+          conversation.pop();
+          if (assistantWrap.parentNode === elMessages) {
+            elMessages.removeChild(assistantWrap);
+          }
+          const prev = elMessages.lastElementChild;
+          if (prev && prev.classList.contains("user")) {
+            elMessages.removeChild(prev);
+          }
+          const msg = err && err.message ? err.message : String(err);
+          appendBubble("assistant", "Ошибка: " + msg, "error");
         }
-        const prev = elMessages.lastElementChild;
-        if (prev && prev.classList.contains("user")) {
-          elMessages.removeChild(prev);
-        }
-        const msg = err && err.message ? err.message : String(err);
-        appendBubble("assistant", "Ошибка: " + msg, "error");
       } finally {
         assistantWrap.classList.remove("streaming");
         elSend.disabled = false;
