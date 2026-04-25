@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Чат с GLM — Puter.js</title>
+  <script src="https://js.puter.com/v2/"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --border: #2d3a4d;
+      --text: #e8edf4;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --accent-hover: #5a9fff;
+      --user-bg: #243447;
+      --assistant-bg: #1e2a3a;
+      --error: #f87171;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem 1rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.1rem;
+      font-weight: 600;
+      flex: 1 1 auto;
+    }
+    header label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+      color: var(--muted);
+    }
+    select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.4rem 0.6rem;
+      font-size: 0.875rem;
+      min-width: 200px;
+    }
+    button#newChat {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.875rem;
+      cursor: pointer;
+    }
+    button#newChat:hover {
+      color: var(--text);
+      border-color: var(--muted);
+    }
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+    .msg {
+      padding: 0.85rem 1rem;
+      border-radius: 12px;
+      line-height: 1.55;
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      max-width: 85%;
+      background: var(--user-bg);
+      border: 1px solid var(--border);
+    }
+    .msg.assistant {
+      align-self: stretch;
+      background: var(--assistant-bg);
+      border: 1px solid var(--border);
+    }
+    .msg.assistant.streaming {
+      border-color: var(--accent);
+    }
+    .msg.error {
+      color: var(--error);
+      background: rgba(248, 113, 113, 0.08);
+      border: 1px solid rgba(248, 113, 113, 0.35);
+    }
+    .msg .role {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    footer.composer {
+      padding: 0.75rem 1rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .composer-inner {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+    textarea {
+      flex: 1;
+      min-height: 44px;
+      max-height: 160px;
+      resize: vertical;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.65rem 0.85rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      line-height: 1.4;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    button#send {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 0.65rem 1.1rem;
+      font-weight: 600;
+      font-size: 0.9rem;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    button#send:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+    button#send:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .hint {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+      line-height: 1.4;
+    }
+    .hint a {
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Чат с Z.AI GLM</h1>
+    <label>
+      Модель
+      <select id="model" aria-label="Модель GLM"></select>
+    </label>
+    <button type="button" id="newChat" title="Очистить историю">Новый чат</button>
+  </header>
+  <div id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+  <footer class="composer">
+    <div class="composer-inner">
+      <textarea
+        id="input"
+        rows="2"
+        placeholder="Введите сообщение…"
+        aria-label="Сообщение"
+      ></textarea>
+      <button type="button" id="send">Отправить</button>
+    </div>
+    <p class="hint">
+      Работает через
+      <a href="https://developer.puter.com/tutorials/free-unlimited-zai-glm-api/" target="_blank" rel="noopener">Puter.js</a>
+      (модель Z.AI GLM, без API-ключа на стороне разработчика). Использование оплачивается по модели
+      <a href="https://docs.puter.com/user-pays-model/" target="_blank" rel="noopener">User-Pays</a>
+      со стороны пользователя Puter.
+    </p>
+  </footer>
+  <script>
+    const GLM_MODELS = [
+      { id: "z-ai/glm-5.1", label: "GLM 5.1" },
+      { id: "z-ai/glm-5-turbo", label: "GLM 5 Turbo" },
+      { id: "z-ai/glm-5", label: "GLM 5" },
+      { id: "z-ai/glm-4.7-flash", label: "GLM 4.7 Flash" },
+      { id: "z-ai/glm-4.7", label: "GLM 4.7" },
+      { id: "z-ai/glm-5v-turbo", label: "GLM 5V Turbo (мультимодальность)" },
+      { id: "z-ai/glm-4.6", label: "GLM 4.6" },
+      { id: "z-ai/glm-4.5-air", label: "GLM 4.5 Air" },
+    ];
+
+    const SYSTEM_PROMPT = {
+      role: "system",
+      content:
+        "Ты полезный ассистент. Отвечай ясно и по делу. Если пользователь пишет на русском — отвечай на русском.",
+    };
+
+    /** @type {{ role: string, content: string }[]} */
+    let conversation = [SYSTEM_PROMPT];
+
+    const elMessages = document.getElementById("messages");
+    const elInput = document.getElementById("input");
+    const elSend = document.getElementById("send");
+    const elModel = document.getElementById("model");
+    const elNewChat = document.getElementById("newChat");
+
+    GLM_MODELS.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.label;
+      elModel.appendChild(opt);
+    });
+    elModel.value = "z-ai/glm-5.1";
+
+    function appendBubble(role, text, extraClass) {
+      const wrap = document.createElement("div");
+      wrap.className = "msg " + role + (extraClass ? " " + extraClass : "");
+      const roleLabel = document.createElement("div");
+      roleLabel.className = "role";
+      roleLabel.textContent = role === "user" ? "Вы" : "GLM";
+      wrap.appendChild(roleLabel);
+      const body = document.createElement("div");
+      body.className = "msg-body";
+      body.textContent = text;
+      wrap.appendChild(body);
+      elMessages.appendChild(wrap);
+      elMessages.scrollTop = elMessages.scrollHeight;
+      return { wrap, body };
+    }
+
+    function extractTextFromResponse(response) {
+      if (response == null) return "";
+      if (typeof response === "string") return response;
+      const msg = response.message;
+      if (!msg) return String(response);
+      const c = msg.content;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) {
+        return c
+          .map((block) => {
+            if (typeof block === "string") return block;
+            if (block && typeof block.text === "string") return block.text;
+            return "";
+          })
+          .join("");
+      }
+      return String(c ?? "");
+    }
+
+    function resetConversation() {
+      conversation = [SYSTEM_PROMPT];
+      elMessages.innerHTML = "";
+      appendBubble(
+        "assistant",
+        "Привет! Я отвечаю через модель GLM в Puter. Напишите сообщение ниже.",
+        ""
+      );
+    }
+
+    resetConversation();
+
+    elNewChat.addEventListener("click", () => {
+      resetConversation();
+      elInput.focus();
+    });
+
+    async function sendMessage() {
+      const text = elInput.value.trim();
+      if (!text) return;
+
+      elInput.value = "";
+      elSend.disabled = true;
+      appendBubble("user", text, "");
+
+      conversation.push({ role: "user", content: text });
+
+      const { body: assistantBody, wrap: assistantWrap } = appendBubble(
+        "assistant",
+        "",
+        "streaming"
+      );
+
+      const model = elModel.value;
+      let fullAssistant = "";
+
+      try {
+        const stream = await puter.ai.chat(conversation, {
+          model,
+          stream: true,
+        });
+
+        for await (const part of stream) {
+          let chunk = "";
+          if (part && part.reasoning) chunk += part.reasoning;
+          else if (part && typeof part.text === "string") chunk += part.text;
+          else if (part && part.type === "text" && part.text) chunk += part.text;
+
+          if (chunk) {
+            fullAssistant += chunk;
+            assistantBody.textContent = fullAssistant;
+            elMessages.scrollTop = elMessages.scrollHeight;
+          }
+        }
+
+        if (!fullAssistant.trim()) {
+          const nonStream = await puter.ai.chat(conversation, { model });
+          fullAssistant = extractTextFromResponse(nonStream);
+          assistantBody.textContent = fullAssistant || "(пустой ответ)";
+        }
+
+        conversation.push({ role: "assistant", content: fullAssistant });
+      } catch (err) {
+        conversation.pop();
+        if (assistantWrap.parentNode === elMessages) {
+          elMessages.removeChild(assistantWrap);
+        }
+        const prev = elMessages.lastElementChild;
+        if (prev && prev.classList.contains("user")) {
+          elMessages.removeChild(prev);
+        }
+        const msg = err && err.message ? err.message : String(err);
+        appendBubble("assistant", "Ошибка: " + msg, "error");
+      } finally {
+        assistantWrap.classList.remove("streaming");
+        elSend.disabled = false;
+        elInput.focus();
+      }
+    }
+
+    elSend.addEventListener("click", sendMessage);
+    elInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>
